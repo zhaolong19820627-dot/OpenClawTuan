@@ -42,7 +42,7 @@
 
   <div class="grid">
     <div class="card"><h3>一级目录</h3><div id="cats"></div></div>
-    <div class="card"><h3>二级目录（索引，按项目合并）</h3><div id="list" class="scroll"></div></div>
+    <div class="card"><h3>二级目录（索引，按项目合并）</h3><div class="muted" id="listStat">筛选后：0 个项目 / 0 个文件</div><div id="list" class="scroll" style="margin-top:6px"></div></div>
     <div class="card"><h3>三级页面（详情）</h3><div id="detail" class="muted">请选择项目</div></div>
   </div>
 </div>
@@ -120,6 +120,8 @@ function renderList(){
   const rows=(KB.by_category[currentCat]||[]).filter(filt);
   const projects=mergeByProject(rows);
   currentProjects=projects;
+  const stat=document.getElementById('listStat');
+  if(stat) stat.textContent=`筛选后：${projects.length} 个项目 / ${rows.length} 个文件`;
   const box=document.getElementById('list');
   box.innerHTML = `<table><thead><tr><th>项目名称</th><th>标签</th><th>最新更新时间</th><th>文件数</th></tr></thead><tbody>`+
     projects.map((p,i)=>`<tr class='item' onclick='showProject(${i})'><td>${esc(p.project_name)}</td><td>${esc(p.industry_primary||'其他行业')}${p.industry_secondary?` / ${esc(p.industry_secondary)}`:''}</td><td>${esc(p.latest_updated_at)}</td><td>${p.files.length}</td></tr>`).join('')+
@@ -134,6 +136,9 @@ function showProject(i){
       <div class='thumb'>${extIcon(f.ext)}</div>
       <div>${esc(f.title)}</div>
     </td>
+    <td>${esc(pick(f,'ext'))}</td>
+    <td>${esc(pick(f,'title'))}</td>
+    <td><code>${esc(pick(f,'file_path'))}</code></td>
     <td>${esc(pick(f,'industry_primary','其他行业'))}${f.industry_secondary?` / ${esc(f.industry_secondary)}`:''}</td>
     <td>${esc(pick(f,'updated_at'))}</td>
     <td>
@@ -149,7 +154,7 @@ function showProject(i){
     <div><b>售前姓名：</b>${esc(p.presale_name||'-')}</div>
     <div><b>最新更新时间：</b>${esc(p.latest_updated_at||'-')}</div>
     <div style='margin:8px 0'><b>文件清单（合并同项目）</b></div>
-    <div class='scroll'><table><thead><tr><th>文档缩略图/文件名</th><th>标签</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${rows||'<tr><td colspan="4">无</td></tr>'}</tbody></table></div>
+    <div class='scroll'><table><thead><tr><th>文档缩略图/文件名</th><th>文件类型</th><th>文件原始名称</th><th>文件原始路径</th><th>标签</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${rows||'<tr><td colspan="7">无</td></tr>'}</tbody></table></div>
   `;
 }
 

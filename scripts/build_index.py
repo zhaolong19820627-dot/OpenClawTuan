@@ -88,6 +88,8 @@ def detect_category(path: str, ext: str, name: str) -> str:
         return "报价文档"
     if "标准" in s or "规范" in s or "指南" in s:
         return "标准规范"
+    if ext in {".ppt", ".pptx"}:
+        return "汇报PPT"
     if ext in VIDEO_EXT:
         return "视频"
     if ext in DOC_EXT:
