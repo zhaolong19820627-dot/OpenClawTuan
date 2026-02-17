@@ -8,24 +8,60 @@ from collections import defaultdict
 ROOT = "/mnt/tuan"
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "kb.json")
 
-EXT_MAP = {
-    ".ppt": "汇报PPT", ".pptx": "汇报PPT",
-    ".doc": "解决方案文档", ".docx": "解决方案文档",
-    ".pdf": "解决方案文档",
-    ".xls": "报价文档", ".xlsx": "报价文档",
-    ".mp4": "视频", ".avi": "视频", ".mov": "视频", ".mkv": "视频", ".wmv": "视频", ".flv": "视频",
+CATEGORY_ORDER = ["汇报PPT", "解决方案文档", "招标文档", "投标文档", "报价文档", "合同文档", "标准规范", "视频", "其他"]
+
+VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv"}
+EXCEL_EXT = {".xls", ".xlsx"}
+DOC_EXT = {".doc", ".docx", ".pdf", ".ppt", ".pptx"}
+
+PRIMARY_TAGS = {
+    "AI赋能": ["AI视频分析一体机", "应急大模型", "化工园区AI赋能", "应急领域AI赋能", "其他"],
+    "安全生产": ["HSE", "安全生产标准化", "重大危险源", "双重预防", "特殊作业", "人员定位", "承包商", "教育培训", "6+5", "其他"],
+    "智慧园区": ["化工园区", "经开区", "其他"],
+    "应急管理": ["应急指挥", "应急演练", "应急推演", "其他"],
+    "车路协同": ["智慧高速", "智慧隧道", "智慧桥梁", "智慧服务区", "智慧收费站", "智慧停车场", "无人驾驶训练场", "其他"],
+    "其他行业": [],
 }
 
-CATEGORY_ORDER = ["汇报PPT", "解决方案文档", "招标文档", "投标文档", "报价文档", "标准规范", "视频", "其他"]
-
-INDUSTRY_KEYWORDS = {
-    "AI赋能": ["ai", "人工智能", "aigc", "大模型", "llm"],
-    "安全生产": ["安全生产", "隐患", "应急", "风险管控", "双重预防"],
-    "化工园区": ["化工", "危化", "危险化学品"],
-    "智慧园区": ["智慧园区", "园区", "数字孪生"],
-    "车路协同": ["车路协同", "车联网", "路侧", "v2x"],
+SUBTAG_KEYWORDS = {
+    "AI赋能": {
+        "AI视频分析一体机": ["ai视频", "视频分析一体机", "智能视频"],
+        "应急大模型": ["应急大模型", "大模型", "llm", "aigc"],
+        "化工园区AI赋能": ["化工园区ai", "化工 ai", "危化 ai"],
+        "应急领域AI赋能": ["应急 ai", "应急领域ai", "应急智能"],
+    },
+    "安全生产": {
+        "HSE": ["hse"],
+        "安全生产标准化": ["安全生产标准化"],
+        "重大危险源": ["重大危险源"],
+        "双重预防": ["双重预防"],
+        "特殊作业": ["特殊作业", "动火", "受限空间"],
+        "人员定位": ["人员定位"],
+        "承包商": ["承包商"],
+        "教育培训": ["教育培训", "培训"],
+        "6+5": ["6+5"],
+    },
+    "智慧园区": {
+        "化工园区": ["化工园区"],
+        "经开区": ["经开区", "开发区"],
+    },
+    "应急管理": {
+        "应急指挥": ["应急指挥"],
+        "应急演练": ["应急演练"],
+        "应急推演": ["应急推演"],
+    },
+    "车路协同": {
+        "智慧高速": ["智慧高速"],
+        "智慧隧道": ["智慧隧道"],
+        "智慧桥梁": ["智慧桥梁"],
+        "智慧服务区": ["智慧服务区"],
+        "智慧收费站": ["智慧收费站"],
+        "智慧停车场": ["智慧停车场"],
+        "无人驾驶训练场": ["无人驾驶训练场", "无人驾驶训练厂"],
+    },
 }
 
+AI_FILE_KEYWORDS = ["ai", "人工智能", "aigc", "大模型", "llm"]
 SKIP_DIRS = {".git", ".stfolder", ".stversions"}
 FALLBACK_TS = datetime(2025, 12, 30, 0, 0, 0)
 
@@ -45,44 +81,72 @@ def detect_category(path: str, ext: str, name: str) -> str:
         return "招标文档"
     if "投标" in s:
         return "投标文档"
-    if "报价" in s or "预算" in s:
+    if "合同" in s:
+        return "合同文档"
+    # 报价文档仅限 excel
+    if ext in EXCEL_EXT and any(k in s for k in ["报价", "预算", "清单", "分项"]):
         return "报价文档"
     if "标准" in s or "规范" in s or "指南" in s:
         return "标准规范"
-    return EXT_MAP.get(ext, "其他")
+    if ext in VIDEO_EXT:
+        return "视频"
+    if ext in DOC_EXT:
+        return "解决方案文档"
+    if ext in EXCEL_EXT:
+        return "其他"
+    return "其他"
 
 
-def detect_industry(path: str, name: str) -> str:
+def detect_tags(path: str, name: str):
     n = name.lower()
     full = f"{name} {path}".lower()
 
-    # AI赋能：仅当文件名包含明显 AI 关键词才归类
-    if any(k in n for k in INDUSTRY_KEYWORDS["AI赋能"]):
-        return "AI赋能"
+    # AI赋能：仅文件名包含明显关键词
+    if any(k in n for k in AI_FILE_KEYWORDS):
+        primary = "AI赋能"
+        sub_map = SUBTAG_KEYWORDS.get(primary, {})
+        for sub, kws in sub_map.items():
+            if any(k.lower() in full for k in kws):
+                return primary, sub
+        return primary, "其他"
 
-    for k, kws in INDUSTRY_KEYWORDS.items():
-        if k == "AI赋能":
-            continue
-        if any(w.lower() in full for w in kws):
-            return k
+    for primary in ["安全生产", "智慧园区", "应急管理", "车路协同"]:
+        sub_map = SUBTAG_KEYWORDS.get(primary, {})
+        for sub, kws in sub_map.items():
+            if any(k.lower() in full for k in kws):
+                return primary, sub
+        # 一级命中兜底
+        if any(primary.lower() in full for _ in [0]):
+            return primary, "其他"
 
-    return "其他行业"
+    # 规则补充
+    if any(k in full for k in ["安全生产", "隐患", "双重预防", "重大危险源"]):
+        return "安全生产", "其他"
+    if any(k in full for k in ["智慧园区", "园区", "数字孪生", "化工园区", "经开区"]):
+        sub = "化工园区" if "化工园区" in full else ("经开区" if "经开区" in full or "开发区" in full else "其他")
+        return "智慧园区", sub
+    if any(k in full for k in ["应急指挥", "应急演练", "应急推演", "应急"]):
+        sub = "应急指挥" if "应急指挥" in full else ("应急演练" if "应急演练" in full else ("应急推演" if "应急推演" in full else "其他"))
+        return "应急管理", sub
+    if any(k in full for k in ["车路协同", "智慧高速", "智慧隧道", "智慧桥梁", "智慧服务区", "智慧收费站", "智慧停车场", "无人驾驶训练场", "无人驾驶训练厂", "v2x"]):
+        for sub in PRIMARY_TAGS["车路协同"]:
+            if sub != "其他" and sub.lower() in full:
+                return "车路协同", sub
+        return "车路协同", "其他"
+
+    return "其他行业", ""
 
 
 def project_name(path: str, name: str) -> str:
     b = os.path.splitext(name)[0]
     b = re.sub(r"^[【\[].*?[】\]]", "", b).strip()
-    # 保留中文主干（不再只取英文简写）
     zh = "".join(re.findall(r"[\u4e00-\u9fff]+", b))
     if len(zh) >= 2:
         return zh
-
     parent = os.path.basename(os.path.dirname(path))
     zh_parent = "".join(re.findall(r"[\u4e00-\u9fff]+", parent))
     if len(zh_parent) >= 2:
         return zh_parent
-
-    # 兜底：取去版本化后的文件名
     b2 = re.split(r"[-_—（(]", b)[0].strip()
     return b2 or parent or "未命名项目"
 
@@ -102,7 +166,7 @@ def scan_files(root: str):
     for dp, dns, fns in os.walk(root):
         dns[:] = [d for d in dns if d not in SKIP_DIRS]
         for fn in fns:
-            if fn.startswith("."):
+            if fn.startswith('.'):
                 continue
             full = os.path.join(dp, fn)
             if not os.path.isfile(full):
@@ -129,9 +193,7 @@ def build():
     latest_entries = []
     for (_, _), arr in groups.items():
         arr.sort(key=lambda x: x["mtime"], reverse=True)
-        latest = arr[0]
-        history = arr[1:]
-        latest_entries.append((latest, history))
+        latest_entries.append((arr[0], arr[1:]))
 
     docs = []
     for latest, history in latest_entries:
@@ -140,28 +202,27 @@ def build():
         ext = latest["ext"]
         cat = detect_category(path, ext, name)
         dt, ts_fallback = safe_dt_from_ts(latest["mtime"])
-        mtime = dt.strftime("%Y-%m-%d %H:%M:%S")
+        primary, secondary = detect_tags(path, name)
         docs.append({
             "title": name,
             "category": cat,
             "project_name": project_name(path, name),
-            "industry_type": detect_industry(path, name),
+            "industry_type": primary,
+            "industry_primary": primary,
+            "industry_secondary": secondary,
             "time": dt.strftime("%Y-%m-%d"),
             "presale_name": "",
-            "updated_at": mtime,
+            "updated_at": dt.strftime("%Y-%m-%d %H:%M:%S"),
             "timestamp_fallback": ts_fallback,
             "history_versions": [h["path"] for h in history],
             "file_path": path,
             "size": latest["size"],
+            "ext": ext,
         })
 
     cat_map = {c: [] for c in CATEGORY_ORDER}
-    cat_map["其他"] = []
     for d in docs:
-        if d["category"] not in cat_map:
-            cat_map["其他"].append(d)
-        else:
-            cat_map[d["category"]].append(d)
+        cat_map[d["category"]].append(d)
 
     for c in cat_map:
         cat_map[c].sort(key=lambda x: x["updated_at"], reverse=True)
@@ -172,6 +233,7 @@ def build():
         "total_raw_files": len(all_files),
         "total_indexed_latest": len(docs),
         "categories": [{"name": c, "count": len(cat_map.get(c, []))} for c in CATEGORY_ORDER],
+        "tag_tree": PRIMARY_TAGS,
         "documents": docs,
         "by_category": cat_map,
     }
