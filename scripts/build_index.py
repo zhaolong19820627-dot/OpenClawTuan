@@ -19,10 +19,10 @@ EXT_MAP = {
 CATEGORY_ORDER = ["汇报PPT", "解决方案文档", "招标文档", "投标文档", "报价文档", "标准规范", "视频", "其他"]
 
 INDUSTRY_KEYWORDS = {
-    "AI赋能": ["ai", "大模型", "智能", "算法"],
-    "安全生产": ["安全", "隐患", "应急", "风险"],
+    "AI赋能": ["ai", "人工智能", "aigc", "大模型", "llm"],
+    "安全生产": ["安全生产", "隐患", "应急", "风险管控", "双重预防"],
     "化工园区": ["化工", "危化", "危险化学品"],
-    "智慧园区": ["园区", "智慧园区", "数字孪生"],
+    "智慧园区": ["智慧园区", "园区", "数字孪生"],
     "车路协同": ["车路协同", "车联网", "路侧", "v2x"],
 }
 
@@ -52,25 +52,44 @@ def detect_category(path: str, ext: str, name: str) -> str:
     return EXT_MAP.get(ext, "其他")
 
 
-def detect_industry(text: str) -> str:
-    t = text.lower()
+def detect_industry(path: str, name: str) -> str:
+    n = name.lower()
+    full = f"{name} {path}".lower()
+
+    # AI赋能：仅当文件名包含明显 AI 关键词才归类
+    if any(k in n for k in INDUSTRY_KEYWORDS["AI赋能"]):
+        return "AI赋能"
+
     for k, kws in INDUSTRY_KEYWORDS.items():
-        if any(w.lower() in t for w in kws):
+        if k == "AI赋能":
+            continue
+        if any(w.lower() in full for w in kws):
             return k
-    return ""
+
+    return "其他行业"
 
 
 def project_name(path: str, name: str) -> str:
     b = os.path.splitext(name)[0]
     b = re.sub(r"^[【\[].*?[】\]]", "", b).strip()
-    b = re.split(r"[-_—（(]", b)[0].strip()
-    return b or os.path.basename(os.path.dirname(path))
+    # 保留中文主干（不再只取英文简写）
+    zh = "".join(re.findall(r"[\u4e00-\u9fff]+", b))
+    if len(zh) >= 2:
+        return zh
+
+    parent = os.path.basename(os.path.dirname(path))
+    zh_parent = "".join(re.findall(r"[\u4e00-\u9fff]+", parent))
+    if len(zh_parent) >= 2:
+        return zh_parent
+
+    # 兜底：取去版本化后的文件名
+    b2 = re.split(r"[-_—（(]", b)[0].strip()
+    return b2 or parent or "未命名项目"
 
 
 def safe_dt_from_ts(ts: int):
     try:
         dt = datetime.fromtimestamp(int(ts))
-        # 过滤明显异常年份
         if dt.year < 1990 or dt.year > 2100:
             raise ValueError("timestamp out of accepted year range")
         return dt, False
@@ -126,7 +145,7 @@ def build():
             "title": name,
             "category": cat,
             "project_name": project_name(path, name),
-            "industry_type": detect_industry(f"{name} {path}"),
+            "industry_type": detect_industry(path, name),
             "time": dt.strftime("%Y-%m-%d"),
             "presale_name": "",
             "updated_at": mtime,

@@ -6,9 +6,9 @@
   <title>图安工作知识库</title>
   <style>
     body{margin:0;font-family:system-ui;background:#0b1020;color:#eaf0ff}
-    .wrap{max-width:1400px;margin:0 auto;padding:14px}
+    .wrap{max-width:1500px;margin:0 auto;padding:14px}
     .muted{color:#9cb0df;font-size:12px}
-    .grid{display:grid;grid-template-columns:280px 1fr 1fr;gap:12px}
+    .grid{display:grid;grid-template-columns:280px 1.2fr 1fr;gap:12px}
     .card{background:#111a33;border:1px solid #2a3c6b;border-radius:10px;padding:10px}
     h3{margin:0 0 8px 0}
     .item{padding:8px;border-radius:8px;cursor:pointer}
@@ -17,6 +17,10 @@
     table{width:100%;border-collapse:collapse;font-size:12px}
     td,th{padding:6px;border-bottom:1px solid #25345e;text-align:left;vertical-align:top}
     input,select{background:#0c1428;border:1px solid #2a3c6b;color:#eaf0ff;border-radius:8px;padding:8px}
+    .scroll{max-height:72vh; overflow:auto; border:1px solid #22365f; border-radius:8px}
+    .btn{display:inline-block;padding:6px 10px;border:1px solid #2a3c6b;border-radius:8px;color:#d9e6ff;text-decoration:none;margin-right:6px;background:#0c1428}
+    .btn:hover{background:#162548}
+    code{background:#0c1428;padding:2px 6px;border-radius:6px;border:1px solid #2a3c6b}
   </style>
 </head>
 <body>
@@ -25,21 +29,32 @@
   <div class="muted" id="meta">加载中...</div>
   <div style="display:flex;gap:8px;margin:10px 0">
     <input id="q" placeholder="搜索项目名/文件名/行业" style="flex:1"/>
-    <select id="industry"><option value="">全部行业</option><option>AI赋能</option><option>安全生产</option><option>化工园区</option><option>智慧园区</option><option>车路协同</option></select>
+    <select id="industry">
+      <option value="">全部行业</option>
+      <option>AI赋能</option>
+      <option>安全生产</option>
+      <option>化工园区</option>
+      <option>智慧园区</option>
+      <option>车路协同</option>
+      <option>其他行业</option>
+    </select>
   </div>
   <div class="grid">
     <div class="card"><h3>一级目录</h3><div id="cats"></div></div>
-    <div class="card"><h3>二级目录（索引）</h3><div id="list"></div></div>
-    <div class="card"><h3>三级页面（详情）</h3><div id="detail" class="muted">请选择文档</div></div>
+    <div class="card"><h3>二级目录（索引，按项目合并）</h3><div id="list" class="scroll"></div></div>
+    <div class="card"><h3>三级页面（详情）</h3><div id="detail" class="muted">请选择项目</div></div>
   </div>
 </div>
 <script>
-let KB=null, currentCat='', currentList=[];
+let KB=null, currentCat='', currentProjects=[];
 const esc=s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+const pick=(obj,k,d='-')=>(obj&&obj[k]!=null&&obj[k]!==''?obj[k]:d);
+
 function renderCats(){
   const box=document.getElementById('cats');
   box.innerHTML=KB.categories.map(c=>`<div class='item ${currentCat===c.name?'active':''}' onclick="pickCat('${c.name}')">${esc(c.name)} (${c.count})</div>`).join('');
 }
+
 function filt(d){
   const q=document.getElementById('q').value.trim().toLowerCase();
   const ind=document.getElementById('industry').value;
@@ -47,28 +62,59 @@ function filt(d){
   if(!q) return true;
   return JSON.stringify(d).toLowerCase().includes(q);
 }
+
+function mergeByProject(rows){
+  const m=new Map();
+  rows.forEach(d=>{
+    const k=(d.project_name||'未命名项目').trim();
+    if(!m.has(k)){
+      m.set(k,{project_name:k, files:[], latest_updated_at:'', industry_type:d.industry_type||'其他行业', time:d.time||'', presale_name:d.presale_name||''});
+    }
+    const g=m.get(k);
+    g.files.push(d);
+    if(!g.latest_updated_at || String(d.updated_at)>String(g.latest_updated_at)) g.latest_updated_at=d.updated_at;
+    if((g.industry_type==='其他行业' || !g.industry_type) && d.industry_type) g.industry_type=d.industry_type;
+    if(String(d.time)>String(g.time)) g.time=d.time;
+  });
+  return Array.from(m.values()).sort((a,b)=>String(b.latest_updated_at).localeCompare(String(a.latest_updated_at)));
+}
+
 function renderList(){
   const rows=(KB.by_category[currentCat]||[]).filter(filt);
-  currentList=rows;
+  const projects=mergeByProject(rows);
+  currentProjects=projects;
   const box=document.getElementById('list');
-  box.innerHTML = `<table><thead><tr><th>项目名称</th><th>行业</th><th>时间</th><th>售前</th><th>更新时间</th></tr></thead><tbody>`+
-    rows.map((d,i)=>`<tr class='item' onclick='showDetail(${i})'><td>${esc(d.project_name)}</td><td>${esc(d.industry_type||'-')}</td><td>${esc(d.time)}</td><td>${esc(d.presale_name||'-')}</td><td>${esc(d.updated_at)}</td></tr>`).join('')+
+  box.innerHTML = `<table><thead><tr><th>项目名称</th><th>行业</th><th>最新更新时间</th><th>文件数</th></tr></thead><tbody>`+
+    projects.map((p,i)=>`<tr class='item' onclick='showProject(${i})'><td>${esc(p.project_name)}</td><td>${esc(p.industry_type||'其他行业')}</td><td>${esc(p.latest_updated_at)}</td><td>${p.files.length}</td></tr>`).join('')+
     `</tbody></table>`;
 }
-function showDetail(i){
-  const d=currentList[i]; if(!d) return;
+
+function showProject(i){
+  const p=currentProjects[i]; if(!p) return;
+  const files=(p.files||[]).sort((a,b)=>String(b.updated_at).localeCompare(String(a.updated_at)));
+  const rows=files.map(f=>`<tr>
+    <td>${esc(f.title)}</td>
+    <td>${esc(pick(f,'industry_type','其他行业'))}</td>
+    <td>${esc(pick(f,'updated_at'))}</td>
+    <td>
+      <a class='btn' href='/preview?path=${encodeURIComponent(f.file_path)}' target='_blank'>预览</a>
+      <a class='btn' href='/download?path=${encodeURIComponent(f.file_path)}'>下载</a>
+    </td>
+  </tr>`).join('');
+
   document.getElementById('detail').innerHTML = `
-    <div><b>文件名：</b>${esc(d.title)}</div>
-    <div><b>项目名称：</b>${esc(d.project_name)}</div>
-    <div><b>行业类型：</b>${esc(d.industry_type||'-')}</div>
-    <div><b>时间：</b>${esc(d.time)}</div>
-    <div><b>售前姓名：</b>${esc(d.presale_name||'-')}</div>
-    <div><b>更新时间：</b>${esc(d.updated_at)}</div>
-    <div><b>文件地址：</b><code>${esc(d.file_path)}</code></div>
-    <div><b>历史版本：</b><ul>${(d.history_versions||[]).map(h=>`<li><code>${esc(h)}</code></li>`).join('')||'<li>无</li>'}</ul></div>
+    <div><b>项目名称：</b>${esc(p.project_name)}</div>
+    <div><b>行业类型：</b>${esc(p.industry_type||'其他行业')}</div>
+    <div><b>时间：</b>${esc(p.time||'-')}</div>
+    <div><b>售前姓名：</b>${esc(p.presale_name||'-')}</div>
+    <div><b>最新更新时间：</b>${esc(p.latest_updated_at||'-')}</div>
+    <div style='margin:8px 0'><b>文件清单（合并同项目）</b></div>
+    <div class='scroll'><table><thead><tr><th>文件名</th><th>行业</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${rows||'<tr><td colspan="4">无</td></tr>'}</tbody></table></div>
   `;
 }
-function pickCat(c){ currentCat=c; renderCats(); renderList(); document.getElementById('detail').innerHTML='请选择文档'; }
+
+function pickCat(c){ currentCat=c; renderCats(); renderList(); document.getElementById('detail').innerHTML='请选择项目'; }
+
 async function boot(){
   KB = await (await fetch('./data/kb.json')).json();
   document.getElementById('meta').textContent=`根目录：${KB.root} | 原始文件 ${KB.total_raw_files} | 去重后 ${KB.total_indexed_latest} | 生成时间 ${KB.generated_at}`;
