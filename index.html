@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>图安工作知识库</title>
+  <style>
+    body{margin:0;font-family:system-ui;background:#0b1020;color:#eaf0ff}
+    .wrap{max-width:1400px;margin:0 auto;padding:14px}
+    .muted{color:#9cb0df;font-size:12px}
+    .grid{display:grid;grid-template-columns:280px 1fr 1fr;gap:12px}
+    .card{background:#111a33;border:1px solid #2a3c6b;border-radius:10px;padding:10px}
+    h3{margin:0 0 8px 0}
+    .item{padding:8px;border-radius:8px;cursor:pointer}
+    .item:hover{background:#172447}
+    .active{background:#1d2f5c}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    td,th{padding:6px;border-bottom:1px solid #25345e;text-align:left;vertical-align:top}
+    input,select{background:#0c1428;border:1px solid #2a3c6b;color:#eaf0ff;border-radius:8px;padding:8px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h2>图安工作知识库网站（三级页面）</h2>
+  <div class="muted" id="meta">加载中...</div>
+  <div style="display:flex;gap:8px;margin:10px 0">
+    <input id="q" placeholder="搜索项目名/文件名/行业" style="flex:1"/>
+    <select id="industry"><option value="">全部行业</option><option>AI赋能</option><option>安全生产</option><option>化工园区</option><option>智慧园区</option><option>车路协同</option></select>
+  </div>
+  <div class="grid">
+    <div class="card"><h3>一级目录</h3><div id="cats"></div></div>
+    <div class="card"><h3>二级目录（索引）</h3><div id="list"></div></div>
+    <div class="card"><h3>三级页面（详情）</h3><div id="detail" class="muted">请选择文档</div></div>
+  </div>
+</div>
+<script>
+let KB=null, currentCat='', currentList=[];
+const esc=s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+function renderCats(){
+  const box=document.getElementById('cats');
+  box.innerHTML=KB.categories.map(c=>`<div class='item ${currentCat===c.name?'active':''}' onclick="pickCat('${c.name}')">${esc(c.name)} (${c.count})</div>`).join('');
+}
+function filt(d){
+  const q=document.getElementById('q').value.trim().toLowerCase();
+  const ind=document.getElementById('industry').value;
+  if(ind && d.industry_type!==ind) return false;
+  if(!q) return true;
+  return JSON.stringify(d).toLowerCase().includes(q);
+}
+function renderList(){
+  const rows=(KB.by_category[currentCat]||[]).filter(filt);
+  currentList=rows;
+  const box=document.getElementById('list');
+  box.innerHTML = `<table><thead><tr><th>项目名称</th><th>行业</th><th>时间</th><th>售前</th><th>更新时间</th></tr></thead><tbody>`+
+    rows.map((d,i)=>`<tr class='item' onclick='showDetail(${i})'><td>${esc(d.project_name)}</td><td>${esc(d.industry_type||'-')}</td><td>${esc(d.time)}</td><td>${esc(d.presale_name||'-')}</td><td>${esc(d.updated_at)}</td></tr>`).join('')+
+    `</tbody></table>`;
+}
+function showDetail(i){
+  const d=currentList[i]; if(!d) return;
+  document.getElementById('detail').innerHTML = `
+    <div><b>文件名：</b>${esc(d.title)}</div>
+    <div><b>项目名称：</b>${esc(d.project_name)}</div>
+    <div><b>行业类型：</b>${esc(d.industry_type||'-')}</div>
+    <div><b>时间：</b>${esc(d.time)}</div>
+    <div><b>售前姓名：</b>${esc(d.presale_name||'-')}</div>
+    <div><b>更新时间：</b>${esc(d.updated_at)}</div>
+    <div><b>文件地址：</b><code>${esc(d.file_path)}</code></div>
+    <div><b>历史版本：</b><ul>${(d.history_versions||[]).map(h=>`<li><code>${esc(h)}</code></li>`).join('')||'<li>无</li>'}</ul></div>
+  `;
+}
+function pickCat(c){ currentCat=c; renderCats(); renderList(); document.getElementById('detail').innerHTML='请选择文档'; }
+async function boot(){
+  KB = await (await fetch('./data/kb.json')).json();
+  document.getElementById('meta').textContent=`根目录：${KB.root} | 原始文件 ${KB.total_raw_files} | 去重后 ${KB.total_indexed_latest} | 生成时间 ${KB.generated_at}`;
+  currentCat=(KB.categories[0]||{}).name||'';
+  renderCats(); renderList();
+  document.getElementById('q').addEventListener('input', renderList);
+  document.getElementById('industry').addEventListener('change', renderList);
+}
+boot();
+</script>
+</body>
+</html>
