@@ -8,7 +8,7 @@ from collections import defaultdict
 ROOT = "/mnt/tuan"
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "kb.json")
 
-CATEGORY_ORDER = ["汇报PPT", "解决方案文档", "招标文档", "投标文档", "报价文档", "合同文档", "标准规范", "视频", "其他"]
+CATEGORY_ORDER = ["汇报PPT", "解决方案文档", "招标文档", "投标文档", "报价文档", "合同文档", "标准规范", "视频", "图安资质", "其他"]
 
 VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv"}
 EXCEL_EXT = {".xls", ".xlsx"}
@@ -65,6 +65,9 @@ AI_FILE_KEYWORDS = ["ai", "人工智能", "aigc", "大模型", "llm"]
 SKIP_DIRS = {".git", ".stfolder", ".stversions"}
 FALLBACK_TS = datetime(2025, 12, 30, 0, 0, 0)
 
+QUAL_FOLDER_HINT = "/mnt/tuan/0图安世纪-标准解决方案/01 图安世纪资质"
+QUAL_SECOND_LEVEL = ["公司介绍（含产品介绍）", "相关证书", "专利", "著作权", "测试报告", "合同业绩", "人员资质", "其他"]
+
 
 def normalize_name(name: str) -> str:
     base = os.path.splitext(name)[0].lower()
@@ -77,6 +80,8 @@ def normalize_name(name: str) -> str:
 
 def detect_category(path: str, ext: str, name: str) -> str:
     s = f"{path} {name}".lower()
+    if QUAL_FOLDER_HINT.lower() in path.lower() or "图安世纪资质" in s:
+        return "图安资质"
     if "招标" in s:
         return "招标文档"
     if "投标" in s:
@@ -139,7 +144,29 @@ def detect_tags(path: str, name: str):
     return "其他行业", ""
 
 
-def project_name(path: str, name: str) -> str:
+def detect_qualification_group(path: str, name: str) -> str:
+    s = f"{path} {name}".lower()
+    if any(k in s for k in ["公司介绍", "产品介绍", "产品手册", "宣传册"]):
+        return "公司介绍（含产品介绍）"
+    if any(k in s for k in ["证书", "认证", "资信", "荣誉"]):
+        return "相关证书"
+    if "专利" in s:
+        return "专利"
+    if any(k in s for k in ["著作权", "软著", "软件著作权"]):
+        return "著作权"
+    if any(k in s for k in ["测试报告", "检测报告", "检验报告", "测评报告"]):
+        return "测试报告"
+    if any(k in s for k in ["合同业绩", "业绩", "案例合同", "项目合同"]):
+        return "合同业绩"
+    if any(k in s for k in ["人员资质", "人员证书", "工程师", "职称", "建造师"]):
+        return "人员资质"
+    return "其他"
+
+
+def project_name(path: str, name: str, category: str) -> str:
+    if category == "图安资质":
+        return detect_qualification_group(path, name)
+
     b = os.path.splitext(name)[0]
     b = re.sub(r"^[【\[].*?[】\]]", "", b).strip()
     zh = "".join(re.findall(r"[\u4e00-\u9fff]+", b))
@@ -208,7 +235,7 @@ def build():
         docs.append({
             "title": name,
             "category": cat,
-            "project_name": project_name(path, name),
+            "project_name": project_name(path, name, cat),
             "industry_type": primary,
             "industry_primary": primary,
             "industry_secondary": secondary,
