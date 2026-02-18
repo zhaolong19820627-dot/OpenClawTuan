@@ -8,7 +8,7 @@ from collections import defaultdict
 ROOT = "/mnt/tuan"
 OUT = os.path.join(os.path.dirname(__file__), "..", "data", "kb.json")
 
-CATEGORY_ORDER = ["汇报PPT", "解决方案文档", "招标文档", "投标文档", "报价文档", "合同文档", "标准规范", "视频", "图安资质", "其他"]
+CATEGORY_ORDER = ["汇报PPT", "解决方案文档", "招标文档", "投标文档", "报价文档", "合同文档", "标准规范", "演示视频", "图安资质", "其他"]
 
 VIDEO_EXT = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv"}
 EXCEL_EXT = {".xls", ".xlsx"}
@@ -96,7 +96,7 @@ def detect_category(path: str, ext: str, name: str) -> str:
     if ext in {".ppt", ".pptx"}:
         return "汇报PPT"
     if ext in VIDEO_EXT:
-        return "视频"
+        return "演示视频"
     if ext in DOC_EXT:
         return "解决方案文档"
     if ext in EXCEL_EXT:
