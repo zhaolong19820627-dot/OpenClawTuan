@@ -263,13 +263,13 @@ def build():
         "total_indexed_latest": len(docs),
         "categories": [{"name": c, "count": len(cat_map.get(c, []))} for c in CATEGORY_ORDER],
         "tag_tree": PRIMARY_TAGS,
-        "documents": docs,
+        # 仅保留 by_category，避免 documents + by_category 双份冗余造成首屏加载慢
         "by_category": cat_map,
     }
 
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=2)
+        json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
 
     print(f"generated: {OUT}")
     print(f"raw={len(all_files)} indexed_latest={len(docs)}")

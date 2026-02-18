@@ -3,6 +3,7 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, unquote, quote
 import os
 import json
+import gzip
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(BASE, "data", "kb.json")
@@ -73,10 +74,42 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         u = urlparse(self.path)
 
+        # 首次打开优化：对 kb.json 开启 gzip + cache
+        if u.path == "/data/kb.json":
+            try:
+                with open(DATA_FILE, "rb") as f:
+                    raw = f.read()
+                ae = (self.headers.get("Accept-Encoding") or "").lower()
+                if "gzip" in ae:
+                    body = gzip.compress(raw, compresslevel=6)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Encoding", "gzip")
+                    self.send_header("Cache-Control", "public, max-age=120")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "public, max-age=120")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            except Exception:
+                self.send_error(404, "kb.json not found")
+                return
+
         if u.path in ("/api/search", "/api/dingtalk_search"):
             q = parse_qs(u.query).get("q", [""])[0].strip()
             kb = load_kb()
-            docs = kb.get("documents", [])
+            docs = kb.get("documents")
+            if docs is None:
+                docs = []
+                for _, arr in (kb.get("by_category") or {}).items():
+                    docs.extend(arr)
             ranked = []
             for d in docs:
                 s = score_doc(q, d)
