@@ -206,53 +206,83 @@ def _extract_text(path: str) -> str:
 
 def _normalize_text_for_extract(text: str) -> str:
     text = text.replace("\r", "\n")
-    text = re.sub(r"[\t\f\v]+", " ", text)
+    text = re.sub(r"[\t\v]+", " ", text)
     text = re.sub(r"\u3000", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text
 
 
-def _find_lines(text: str, keywords, max_items=4, max_len=90):
-    lines = [x.strip() for x in re.split(r"[\r\n]+", text) if x.strip()]
+def _split_pages(text: str):
+    if "\f" in text:
+        pages = [p for p in text.split("\f") if p.strip()]
+        if pages:
+            return pages
+    return [text]
+
+
+def _find_hits(text: str, keywords, max_items=5, max_len=110):
+    pages = _split_pages(text)
     out = []
     seen = set()
-    for ln in lines:
-        s = ln.lower()
-        if any(k.lower() in s for k in keywords):
-            one = re.sub(r"\s+", " ", ln)
-            one = one[:max_len]
-            if one not in seen:
-                out.append(one)
-                seen.add(one)
+    for idx, p in enumerate(pages, 1):
+        for ln in [x.strip() for x in re.split(r"[\r\n]+", p) if x.strip()]:
+            s = ln.lower()
+            if any(k.lower() in s for k in keywords):
+                one = re.sub(r"\s+", " ", ln)[:max_len]
+                key = (one, idx)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"point": one, "page": idx})
+            if len(out) >= max_items:
+                break
         if len(out) >= max_items:
             break
-    return "；".join(out) if out else "未明显命中，建议人工复核原文。"
+    return out
+
+
+def _make_rows(text: str, keywords, suggestion: str, max_items=4):
+    hits = _find_hits(text, keywords, max_items=max_items)
+    if not hits:
+        return [{"point": "未明显命中，建议人工复核原文。", "suggestion": suggestion, "page": "-"}]
+    return [{"point": h["point"], "suggestion": suggestion, "page": h["page"]} for h in hits]
+
+
+def _score_rows(text: str, keywords, suggestion: str, max_items=8):
+    hits = _find_hits(text, keywords, max_items=max_items)
+    rows = []
+    for h in hits:
+        m = re.search(r"(\d+(?:\.\d+)?)\s*分", h["point"])
+        score = m.group(1) + "分" if m else "未明确"
+        rows.append({"point": f"{h['point']}（分值：{score}）", "suggestion": suggestion, "page": h["page"]})
+    if not rows:
+        rows = [{"point": "未识别到明确评分条款，按通用结构输出。", "suggestion": suggestion, "page": "-"}]
+    return rows
 
 
 def _analyze_bid_text(text: str):
     text = _normalize_text_for_extract(text)
     return {
         "供应商分析": {
-            "资质要求": _find_lines(text, ["资质", "资格", "营业执照", "认证", "证书"]),
-            "业绩要求": _find_lines(text, ["业绩", "类似项目", "合同金额", "案例"]),
-            "团队要求": _find_lines(text, ["项目经理", "团队", "人员", "工程师", "驻场"]),
-            "业绩要求（补充）": _find_lines(text, ["业绩证明", "合同复印件", "验收", "中标通知书"]),
-            "信誉要求": _find_lines(text, ["信誉", "信用", "不良记录", "处罚", "黑名单"]),
-            "其他要求": _find_lines(text, ["其他要求", "特别说明", "补充", "否决", "一票否决"]),
+            "资质要求": _make_rows(text, ["资质", "资格", "营业执照", "认证", "证书"], "逐条准备资质证明并对应招标条款编号。"),
+            "业绩要求": _make_rows(text, ["业绩", "类似项目", "合同金额", "案例"], "准备对应合同、验收与中标通知书证明链。"),
+            "项目团队分析": _make_rows(text, ["项目经理", "团队", "人员", "工程师", "注册", "职称"], "根据评审办法准备人员证书、社保与任命文件。"),
+            "信誉要求": _make_rows(text, ["信誉", "信用", "不良记录", "处罚", "黑名单"], "提供信用中国、裁判文书等查询截图并加盖公章。"),
+            "废标条款分析": _make_rows(text, ["废标", "否决", "无效投标", "一票否决"], "建立废标条款核查清单，提交前逐项打勾复核。"),
+            "其他要求": _make_rows(text, ["其他要求", "特别说明", "补充"], "将补充条款纳入响应偏离表并逐条响应。"),
         },
         "评分分析": {
-            "商务评分": _find_lines(text, ["商务评分", "商务部分", "商务分"]),
-            "技术评分": _find_lines(text, ["技术评分", "技术部分", "技术分"]),
-            "价格评分": _find_lines(text, ["价格评分", "报价得分", "价格分"]),
-            "废标条款分析": _find_lines(text, ["废标", "否决", "无效投标", "取消资格"]),
+            "商务评分": _score_rows(text, ["商务评分", "商务部分", "商务分"], "围绕可得分项准备对应证明材料，避免失分。"),
+            "技术评分": _score_rows(text, ["技术评分", "技术部分", "技术分"], "按评分细则组织技术方案，逐点评分响应。"),
+            "价格评分": _score_rows(text, ["价格评分", "报价得分", "价格分", "评审基准价"], "明确评审基准价公式并反推报价区间。"),
         },
         "标书编制分析": {
-            "标书编制整体目录分析": _find_lines(text, ["目录", "章", "节", "投标文件组成"]),
-            "商务标书编制分析（大纲目录）": _find_lines(text, ["商务标", "商务文件", "资格审查", "商务响应"]),
-            "技术标书编制分析（大纲目录）": _find_lines(text, ["技术标", "技术方案", "实施方案", "服务方案"]),
-            "价格部分编制分析": _find_lines(text, ["报价", "价格", "分项报价", "报价表"]),
-            "承诺函分析": _find_lines(text, ["承诺函", "承诺", "声明函"]),
-            "其他部分分析": _find_lines(text, ["附录", "附件", "补充", "备注"]),
+            "响应标书文件目录要求": _make_rows(text, ["响应文件组成", "响应文件格式", "投标文件组成", "目录"], "按招标文件目录顺序逐章编排并保持页码连续。"),
+            "商务标书编制分析（商务评分标准）": _make_rows(text, ["商务评分", "商务文件", "资格审查", "承诺函"], "形成商务标材料清单（含承诺函）并一一对应评分点。"),
+            "技术标书编制分析（技术评分标准）": _make_rows(text, ["技术评分", "技术要求", "采购需求", "技术方案"], "围绕采购需求逐条响应，补充图表和里程碑计划。"),
+            "价格部分编制分析": _make_rows(text, ["价格评分", "最低价", "平均价", "评审基准价"], "按评分法测算最优报价区间并给出报价策略。"),
+            "承诺函分析": _make_rows(text, ["承诺函", "声明函", "承诺"], "梳理并统一模板，确保签章、日期、主体一致。"),
+            "其他部分分析": _make_rows(text, ["附件", "补充", "备注"], "将附件与正文建立交叉引用，防止缺页漏项。"),
         }
     }
 
@@ -298,11 +328,19 @@ def _analysis_to_pdf(file_name: str, analysis: dict, task_id: str = "") -> str:
 
     for sec_title, sec_data in sections:
         story.append(Paragraph(sec_title, h1))
-        data = [["分析项", "分析结果"]]
-        for lvl2, txt in (sec_data or {}).items():
-            data.append([Paragraph(str(lvl2), n_style), Paragraph(str(txt).replace("\n", "<br/>"), n_style)])
+        data = [["分析项", "分析内容（可逐条核查）", "建议响应内容", "页码"]]
+        for lvl2, items in (sec_data or {}).items():
+            rows = items if isinstance(items, list) else [{"point": str(items), "suggestion": "", "page": "-"}]
+            for idx, it in enumerate(rows):
+                label = str(lvl2) if idx == 0 else ""
+                data.append([
+                    Paragraph(label, n_style),
+                    Paragraph(str(it.get("point", "")).replace("\n", "<br/>"), n_style),
+                    Paragraph(str(it.get("suggestion", "")).replace("\n", "<br/>"), n_style),
+                    Paragraph(str(it.get("page", "-")), n_style),
+                ])
 
-        t = Table(data, colWidths=[140, 380], repeatRows=1)
+        t = Table(data, colWidths=[110, 220, 165, 25], repeatRows=1)
         t.setStyle(TableStyle([
             ("FONTNAME", (0, 0), (-1, -1), font),
             ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -319,7 +357,12 @@ def _analysis_to_pdf(file_name: str, analysis: dict, task_id: str = "") -> str:
         story.append(Spacer(1, 10))
 
     story.append(Paragraph("4️⃣ 废标条款清单", h1))
-    story.append(Paragraph(analysis.get("评分分析", {}).get("废标条款分析", "未识别到明显废标条款。"), n_style))
+    fb = analysis.get("供应商分析", {}).get("废标条款分析", [])
+    if isinstance(fb, list) and fb:
+        for it in fb:
+            story.append(Paragraph(f"- {it.get('point','')}（页码：{it.get('page','-')}）", n_style))
+    else:
+        story.append(Paragraph("未识别到明显废标条款。", n_style))
     story.append(Spacer(1, 10))
 
     story.append(Paragraph("6️⃣ 风险提示", h1))

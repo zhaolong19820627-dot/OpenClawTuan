@@ -6,31 +6,37 @@
   <title>标书编制助手</title>
   <style>
     body{margin:0;background:#0b1020;color:#eaf0ff;font-family:system-ui}
-    .wrap{max-width:1200px;margin:0 auto;padding:16px}
+    .wrap{max-width:1400px;margin:0 auto;padding:16px}
     .card{background:#111a33;border:1px solid #2a3c6b;border-radius:10px;padding:12px;margin-bottom:12px}
     .btn{display:inline-block;padding:8px 12px;border:1px solid #2a3c6b;border-radius:8px;background:#0c1428;color:#d9e6ff;cursor:pointer}
     .btn:hover{background:#162548}
     table{width:100%;border-collapse:collapse;font-size:13px}
     th,td{padding:8px;border-bottom:1px solid #25345e;text-align:left;vertical-align:top}
     .muted{color:#9cb0df;font-size:12px}
-    input[type=file]{margin:8px 0}
     pre{white-space:pre-wrap;margin:0}
+    .progress{height:10px;background:#0a1020;border:1px solid #2a3c6b;border-radius:8px;overflow:hidden;margin-top:8px}
+    .bar{height:100%;width:0%;background:linear-gradient(90deg,#3b82f6,#22c55e)}
+    .step{font-size:12px;color:#b9cdfc;margin-top:6px}
+    .sticky{position:sticky;top:0;background:#111a33}
   </style>
 </head>
 <body>
 <div class="wrap">
-  <h2>标书编制</h2>
+  <h2>标书编制（专家分析模式）</h2>
   <div class="card">
     <button id="analyzeBtn" class="btn">招标文件分析</button>
+    <button id="exportBtn" class="btn" style="display:none;margin-left:8px">导出PDF</button>
     <input id="file" type="file" style="display:none"/>
     <div id="state" class="muted" style="margin-top:8px">请点击“招标文件分析”，选择标书文件后自动分析。</div>
+    <div class="progress"><div id="bar" class="bar"></div></div>
+    <div id="step" class="step">当前进度：待开始</div>
   </div>
 
   <div class="card" id="resultCard" style="display:none">
-    <h3>分析结果（表格）</h3>
+    <h3>分析结果（结构化核查表）</h3>
     <div id="meta" class="muted"></div>
     <table>
-      <thead><tr><th style="width:180px">一级模块</th><th style="width:260px">二级项</th><th>分析结果</th></tr></thead>
+      <thead class="sticky"><tr><th style="width:130px">一级模块</th><th style="width:220px">分析项</th><th>分析内容（多行）</th><th style="width:220px">建议响应内容</th><th style="width:80px">招标文件页码</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
@@ -38,37 +44,89 @@
 
 <script>
 const analyzeBtn = document.getElementById('analyzeBtn');
+const exportBtn = document.getElementById('exportBtn');
 const fileInput = document.getElementById('file');
 const state = document.getElementById('state');
+const step = document.getElementById('step');
+const bar = document.getElementById('bar');
 const resultCard = document.getElementById('resultCard');
 const rows = document.getElementById('rows');
 const meta = document.getElementById('meta');
 
+let lastResult = null;
+
 analyzeBtn.onclick = () => fileInput.click();
+
+const progressSteps = [
+  {p:8, t:'当前进度：文件解析准备'},
+  {p:18, t:'当前进度：供应商分析-资质要求'},
+  {p:28, t:'当前进度：供应商分析-业绩要求'},
+  {p:38, t:'当前进度：供应商分析-项目团队分析'},
+  {p:48, t:'当前进度：评分分析-商务评分'},
+  {p:58, t:'当前进度：评分分析-技术评分'},
+  {p:68, t:'当前进度：评分分析-价格评分'},
+  {p:78, t:'当前进度：标书编制分析-商务标书编制分析'},
+  {p:88, t:'当前进度：标书编制分析-技术标书编制分析'},
+  {p:96, t:'当前进度：生成评标分析报告PDF'}
+];
+
+function esc(s){
+  return String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+}
+
+function setProgress(p, txt){
+  bar.style.width = `${p}%`;
+  step.textContent = txt;
+}
 
 fileInput.onchange = async () => {
   const f = fileInput.files && fileInput.files[0];
   if(!f) return;
   state.textContent = `已上传：${f.name}，正在分析，请稍候...`;
+  exportBtn.style.display='none';
+  let idx = 0;
+  setProgress(3,'当前进度：开始分析');
+  const timer = setInterval(()=>{
+    const it = progressSteps[Math.min(idx, progressSteps.length-1)];
+    setProgress(it.p, it.t);
+    idx += 1;
+  }, 1200);
+
   const fd = new FormData();
   fd.append('file', f);
+
   try{
-    const r = await fetch('/api/bid/analyze', {method:'POST', body: fd});
+    const r = await fetch('/api/bid/analyze_pdf', {method:'POST', body: fd});
     const j = await r.json();
     if(!j.ok){
+      clearInterval(timer);
+      setProgress(0,'当前进度：分析失败');
       state.textContent = `分析失败：${j.error||'未知错误'}`;
       return;
     }
+
+    clearInterval(timer);
+    setProgress(100,'当前进度：分析完成');
     state.textContent = `分析完成：${j.file_name}`;
+    lastResult = j;
     render(j);
+    exportBtn.style.display='inline-block';
   }catch(e){
+    clearInterval(timer);
+    setProgress(0,'当前进度：分析失败');
     state.textContent = `分析失败：${e.message||e}`;
   }
 };
 
-function esc(s){
-  return String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
-}
+exportBtn.onclick = () => {
+  if(!lastResult || !lastResult.pdf_download_url) return;
+  const a = document.createElement('a');
+  a.href = lastResult.pdf_download_url;
+  const base = (lastResult.file_name || '项目').replace(/\.[^.]+$/, '');
+  a.download = `${base}评标分析结果.pdf`;
+  a.target = '_blank';
+  a.click();
+};
 
 function render(j){
   resultCard.style.display='block';
@@ -77,15 +135,29 @@ function render(j){
   let html='';
   for(const [lvl1, sec] of Object.entries(a)){
     const entries = Object.entries(sec||{});
-    entries.forEach(([lvl2, txt], idx)=>{
-      html += `<tr>`+
-        `${idx===0?`<td rowspan='${entries.length}'><b>${esc(lvl1)}</b></td>`:''}`+
-        `<td>${esc(lvl2)}</td>`+
-        `<td><pre>${esc(txt)}</pre></td>`+
-      `</tr>`;
+    let totalRows = 0;
+    entries.forEach(([,arr]) => totalRows += Math.max((arr||[]).length,1));
+
+    let firstL1 = true;
+    entries.forEach(([lvl2, arr])=>{
+      const rowsData = (arr && arr.length) ? arr : [{point:'未明显命中，建议人工复核原文。',suggestion:'按通用规范补齐响应材料。',page:'-'}];
+      rowsData.forEach((it, ridx)=>{
+        html += '<tr>';
+        if(firstL1){
+          html += `<td rowspan='${totalRows}'><b>${esc(lvl1)}</b></td>`;
+          firstL1 = false;
+        }
+        if(ridx===0){
+          html += `<td rowspan='${rowsData.length}'>${esc(lvl2)}</td>`;
+        }
+        html += `<td><pre>${esc(it.point||'')}</pre></td>`;
+        html += `<td><pre>${esc(it.suggestion||'')}</pre></td>`;
+        html += `<td>${esc(it.page||'-')}</td>`;
+        html += '</tr>';
+      });
     });
   }
-  rows.innerHTML = html || `<tr><td colspan='3'>无结果</td></tr>`;
+  rows.innerHTML = html || `<tr><td colspan='5'>无结果</td></tr>`;
 }
 </script>
 </body>
