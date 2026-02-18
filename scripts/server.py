@@ -9,6 +9,8 @@ import cgi
 import tempfile
 import subprocess
 import zipfile
+import uuid
+import time
 from datetime import datetime
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
@@ -26,7 +28,17 @@ PORT = int(os.environ.get("TUANKB_PORT", "18893"))
 
 _KB_CACHE = {"mtime": 0, "data": {}}
 REPORT_DIR = os.path.join(BASE, "data", "reports")
+TASKS_FILE = os.path.join(BASE, "data", "bid_tasks.json")
+UPLOAD_DIR = os.path.join(BASE, "data", "uploads")
 os.makedirs(REPORT_DIR, exist_ok=True)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+STATE_WAIT_FILE = "WAIT_FILE"
+STATE_WAIT_CONFIRM = "WAIT_CONFIRM"
+STATE_ANALYZING = "ANALYZING"
+STATE_DONE = "DONE"
+STATE_CANCELED = "CANCELED"
+STATE_ERROR = "ERROR"
 
 
 def _pick_cn_font():
@@ -71,6 +83,57 @@ def load_kb():
         return {"documents": []}
 
 
+def _load_tasks():
+    try:
+        with open(TASKS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_tasks(tasks: dict):
+    with open(TASKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(tasks, f, ensure_ascii=False, indent=2)
+
+
+def _new_task(user_id: str, session_id: str):
+    tid = f"bid-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+    tasks = _load_tasks()
+    tasks[tid] = {
+        "task_id": tid,
+        "user_id": user_id or "",
+        "session_id": session_id or "",
+        "state": STATE_WAIT_FILE,
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "file_path": "",
+        "file_name": "",
+        "file_type": "",
+        "file_summary": "",
+        "pdf_path": "",
+    }
+    _save_tasks(tasks)
+    return tasks[tid]
+
+
+def _update_task(task_id: str, **kwargs):
+    tasks = _load_tasks()
+    if task_id not in tasks:
+        return None
+    tasks[task_id].update(kwargs)
+    tasks[task_id]["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _save_tasks(tasks)
+    return tasks[task_id]
+
+
+def _safe_remove(path: str):
+    try:
+        if path and os.path.isfile(path):
+            os.remove(path)
+    except Exception:
+        pass
+
+
 def score_doc(q: str, d: dict):
     q = q.lower().strip()
     if not q:
@@ -108,7 +171,7 @@ def _extract_text(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     try:
         if ext == ".pdf":
-            p = subprocess.run(["pdftotext", "-layout", path, "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20)
+            p = subprocess.run(["pdftotext", "-layout", path, "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=40)
             if p.returncode == 0 and p.stdout.strip():
                 return p.stdout
         if ext == ".docx":
@@ -118,6 +181,19 @@ def _extract_text(path: str) -> str:
                 xml = re.sub(r"<w:tab[^>]*>", "\t", xml)
                 xml = re.sub(r"<[^>]+>", " ", xml)
                 return _normalize_text_for_extract(xml)
+        if ext in (".xlsx", ".xls"):
+            p = subprocess.run(["libreoffice", "--headless", "--convert-to", "csv", "--outdir", tempfile.gettempdir(), path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+            out_csv = os.path.join(tempfile.gettempdir(), os.path.splitext(os.path.basename(path))[0] + ".csv")
+            if os.path.exists(out_csv):
+                with open(out_csv, "r", encoding="utf-8", errors="ignore") as f:
+                    txt = f.read()
+                _safe_remove(out_csv)
+                if txt.strip():
+                    return txt
+        if ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"):
+            p = subprocess.run(["tesseract", path, "stdout", "-l", "chi_sim+eng"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60)
+            if p.returncode == 0 and p.stdout.strip():
+                return p.stdout
     except Exception:
         pass
 
@@ -181,30 +257,52 @@ def _analyze_bid_text(text: str):
     }
 
 
-def _analysis_to_pdf(file_name: str, analysis: dict) -> str:
+def _risk_hints(analysis: dict):
+    txt = json.dumps(analysis, ensure_ascii=False)
+    risks = []
+    if any(k in txt for k in ["否决", "废标", "无效投标", "一票否决"]):
+        risks.append("存在一票否决/废标相关条款，需重点复核响应完整性。")
+    if any(k in txt for k in ["资质", "资格", "证书"]):
+        risks.append("请核对资质证书有效期与招标文件要求，避免资质缺口。")
+    if any(k in txt for k in ["业绩", "类似项目"]):
+        risks.append("请提前准备可证明业绩材料，防止业绩不足扣分。")
+    risks.append("请检查格式与签章要求，避免格式性风险导致否决。")
+    return risks[:4]
+
+
+def _analysis_to_pdf(file_name: str, analysis: dict, task_id: str = "") -> str:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out = os.path.join(REPORT_DIR, f"bid-analysis-{ts}.pdf")
 
-    doc = SimpleDocTemplate(out, pagesize=A4, leftMargin=26, rightMargin=26, topMargin=28, bottomMargin=24)
+    doc = SimpleDocTemplate(out, pagesize=A4, leftMargin=24, rightMargin=24, topMargin=36, bottomMargin=28)
     styles = getSampleStyleSheet()
     font = _FONT_NAME
-    h_style = ParagraphStyle("h", parent=styles["Heading2"], fontName=font, fontSize=13, leading=16)
-    n_style = ParagraphStyle("n", parent=styles["Normal"], fontName=font, fontSize=9.5, leading=13)
+    title_style = ParagraphStyle("t", parent=styles["Title"], fontName=font, fontSize=16)
+    h1 = ParagraphStyle("h1", parent=styles["Heading2"], fontName=font, fontSize=13, leading=16)
+    h2 = ParagraphStyle("h2", parent=styles["Heading3"], fontName=font, fontSize=11, leading=14)
+    n_style = ParagraphStyle("n", parent=styles["Normal"], fontName=font, fontSize=9.2, leading=12.5)
 
     story = [
-        Paragraph("图安标书分析报告", ParagraphStyle("title", parent=styles["Title"], fontName=font, fontSize=16)),
+        Paragraph("《招标文件分析报告》", title_style),
         Spacer(1, 6),
-        Paragraph(f"文件：{file_name}", n_style),
-        Spacer(1, 10),
+        Paragraph(f"1️⃣ 项目基本信息", h1),
+        Paragraph(f"文件名称：{file_name}<br/>生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br/>任务ID：{task_id or '-'}", n_style),
+        Spacer(1, 8),
     ]
 
-    for lvl1, sec in analysis.items():
-        story.append(Paragraph(f"{lvl1}", h_style))
+    sections = [
+        ("2️⃣ 供应商要求分析表", analysis.get("供应商分析", {})),
+        ("3️⃣ 评分办法拆解表", analysis.get("评分分析", {})),
+        ("5️⃣ 标书编制目录建议", analysis.get("标书编制分析", {})),
+    ]
+
+    for sec_title, sec_data in sections:
+        story.append(Paragraph(sec_title, h1))
         data = [["分析项", "分析结果"]]
-        for lvl2, txt in (sec or {}).items():
+        for lvl2, txt in (sec_data or {}).items():
             data.append([Paragraph(str(lvl2), n_style), Paragraph(str(txt).replace("\n", "<br/>"), n_style)])
 
-        t = Table(data, colWidths=[130, 390], repeatRows=1)
+        t = Table(data, colWidths=[140, 380], repeatRows=1)
         t.setStyle(TableStyle([
             ("FONTNAME", (0, 0), (-1, -1), font),
             ("FONTSIZE", (0, 0), (-1, -1), 9),
@@ -220,7 +318,24 @@ def _analysis_to_pdf(file_name: str, analysis: dict) -> str:
         story.append(t)
         story.append(Spacer(1, 10))
 
-    doc.build(story)
+    story.append(Paragraph("4️⃣ 废标条款清单", h1))
+    story.append(Paragraph(analysis.get("评分分析", {}).get("废标条款分析", "未识别到明显废标条款。"), n_style))
+    story.append(Spacer(1, 10))
+
+    story.append(Paragraph("6️⃣ 风险提示", h1))
+    for r in _risk_hints(analysis):
+        story.append(Paragraph(f"- {r}", n_style))
+
+    def _decorate(canv, _doc):
+        canv.saveState()
+        canv.setFont(font, 9)
+        canv.drawString(24, A4[1]-20, "图安标书分析系统")
+        footer = f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  任务ID：{task_id or '-'}"
+        canv.drawString(24, 14, footer)
+        canv.drawRightString(A4[0]-24, 14, f"第 {canv.getPageNumber()} 页")
+        canv.restoreState()
+
+    doc.build(story, onFirstPage=_decorate, onLaterPages=_decorate)
     return out
 
 
@@ -331,6 +446,92 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
+
+        if u.path == "/api/dingtalk/bid/start":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            body = json.loads(raw.decode("utf-8") or "{}")
+            user_id = body.get("user_id", "")
+            session_id = body.get("session_id", "")
+            t = _new_task(user_id, session_id)
+            self._json({"ok": True, "task_id": t["task_id"], "state": t["state"], "reply": "收到，开始准备分析，请上传招标文件！"})
+            return
+
+        if u.path == "/api/dingtalk/bid/upload":
+            ctype, _ = cgi.parse_header(self.headers.get("Content-Type", ""))
+            if ctype != "multipart/form-data":
+                self._json({"ok": False, "error": "请使用 multipart/form-data 上传文件"}, code=400)
+                return
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": self.headers.get("Content-Type")},
+            )
+            task_id = form.getfirst("task_id", "") if hasattr(form, "getfirst") else ""
+            tasks = _load_tasks()
+            t = tasks.get(task_id)
+            if not t:
+                self._json({"ok": False, "error": "任务不存在，请先发送：图安：分析标书"}, code=400)
+                return
+            file_item = form["file"] if "file" in form else None
+            if file_item is None or not getattr(file_item, "filename", ""):
+                self._json({"ok": False, "error": "未检测到上传文件"}, code=400)
+                return
+            filename = os.path.basename(file_item.filename)
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in (".doc", ".docx", ".pdf", ".xls", ".xlsx", ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"):
+                self._json({"ok": False, "error": "不支持的文件格式"}, code=400)
+                return
+
+            save_path = os.path.join(UPLOAD_DIR, f"{task_id}{ext}")
+            with open(save_path, "wb") as wf:
+                wf.write(file_item.file.read())
+            summary = f"{filename} | 类型:{ext} | 大小:{os.path.getsize(save_path)} bytes"
+            t = _update_task(task_id, state=STATE_WAIT_CONFIRM, file_path=save_path, file_name=filename, file_type=ext, file_summary=summary)
+            self._json({"ok": True, "task_id": task_id, "state": t["state"], "reply": "已收到招标文件\n请选择操作：\n1️⃣ 开始分析\n2️⃣ 取消分析"})
+            return
+
+        if u.path == "/api/dingtalk/bid/confirm":
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            body = json.loads(raw.decode("utf-8") or "{}")
+            task_id = body.get("task_id", "")
+            action = str(body.get("action", "")).strip()
+            tasks = _load_tasks()
+            t = tasks.get(task_id)
+            if not t:
+                self._json({"ok": False, "error": "任务不存在"}, code=400)
+                return
+            if action == "2":
+                _safe_remove(t.get("file_path", ""))
+                t = _update_task(task_id, state=STATE_CANCELED)
+                self._json({"ok": True, "task_id": task_id, "state": t["state"], "reply": "已取消本次标书分析任务"})
+                return
+            if action != "1":
+                self._json({"ok": False, "error": "仅支持 1 或 2"}, code=400)
+                return
+
+            try:
+                _update_task(task_id, state=STATE_ANALYZING)
+                text = _extract_text(t.get("file_path", ""))
+                analysis = _analyze_bid_text(text)
+                pdf_path = _analysis_to_pdf(t.get("file_name", ""), analysis, task_id=task_id)
+                t = _update_task(task_id, state=STATE_DONE, pdf_path=pdf_path)
+                self._json({
+                    "ok": True,
+                    "task_id": task_id,
+                    "state": t["state"],
+                    "reply_start": "正在分析招标文件，请稍候…",
+                    "reply_done": "招标文件分析完成，请查收报告",
+                    "pdf_path": pdf_path,
+                    "pdf_download_url": f"/download?path={pdf_path}",
+                    "analysis": analysis,
+                })
+            except Exception as e:
+                _update_task(task_id, state=STATE_ERROR)
+                self._json({"ok": False, "task_id": task_id, "state": STATE_ERROR, "reply": "文件解析失败，请重新上传标准版招标文件", "error": str(e)}, code=500)
+            return
+
         if u.path in ("/api/bid/analyze", "/api/bid/analyze_pdf"):
             ctype, _ = cgi.parse_header(self.headers.get("Content-Type", ""))
             if ctype != "multipart/form-data":
@@ -356,13 +557,15 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 text = _extract_text(temp_path)
                 analysis = _analyze_bid_text(text)
+                task_id = form.getfirst("task_id", "") if hasattr(form, "getfirst") else ""
                 if u.path == "/api/bid/analyze_pdf":
-                    pdf_path = _analysis_to_pdf(filename, analysis)
+                    pdf_path = _analysis_to_pdf(filename, analysis, task_id=task_id)
                     self._json({
                         "ok": True,
                         "file_name": filename,
                         "file_type": ext,
                         "analysis": analysis,
+                        "task_id": task_id,
                         "pdf_path": pdf_path,
                         "pdf_download_url": f"/download?path={pdf_path}",
                     })
