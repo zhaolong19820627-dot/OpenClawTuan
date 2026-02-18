@@ -47,6 +47,8 @@ cd TuanKB
 - 钉钉检索文本：`/api/dingtalk_search?q=关键词`
 - 预览：`/preview?path=<绝对文件路径>`
 - 下载：`/download?path=<绝对文件路径>`
+- 标书分析（JSON）：`POST /api/bid/analyze`（multipart file）
+- 标书分析并生成PDF：`POST /api/bid/analyze_pdf`（multipart file）
 
 ## 自动更新
 
