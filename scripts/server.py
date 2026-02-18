@@ -4,6 +4,11 @@ from urllib.parse import urlparse, parse_qs, unquote, quote
 import os
 import json
 import gzip
+import re
+import cgi
+import tempfile
+import subprocess
+import zipfile
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(BASE, "data", "kb.json")
@@ -57,6 +62,66 @@ def score_doc(q: str, d: dict):
         if t in p:
             s += 1
     return s
+
+
+def _extract_text(path: str) -> str:
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".pdf":
+            p = subprocess.run(["pdftotext", "-layout", path, "-"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20)
+            if p.returncode == 0 and p.stdout.strip():
+                return p.stdout
+        if ext == ".docx":
+            with zipfile.ZipFile(path) as z:
+                xml = z.read("word/document.xml").decode("utf-8", errors="ignore")
+                xml = re.sub(r"<[^>]+>", " ", xml)
+                return re.sub(r"\s+", " ", xml)
+    except Exception:
+        pass
+
+    try:
+        p = subprocess.run(["strings", "-n", "4", path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20)
+        return p.stdout[:250000]
+    except Exception:
+        return ""
+
+
+def _find_lines(text: str, keywords):
+    lines = [x.strip() for x in re.split(r"[\r\n]+", text) if x.strip()]
+    out = []
+    for ln in lines:
+        s = ln.lower()
+        if any(k.lower() in s for k in keywords):
+            out.append(ln)
+        if len(out) >= 8:
+            break
+    return "\n".join(out) if out else "未明显命中，建议人工复核原文。"
+
+
+def _analyze_bid_text(text: str):
+    return {
+        "供应商分析": {
+            "资质要求": _find_lines(text, ["资质", "资格", "营业执照", "认证", "证书"]),
+            "业绩要求": _find_lines(text, ["业绩", "类似项目", "合同金额", "案例"]),
+            "团队要求": _find_lines(text, ["项目经理", "团队", "人员", "工程师", "驻场"]),
+            "信誉要求": _find_lines(text, ["信誉", "信用", "不良记录", "处罚", "黑名单"]),
+            "其他要求": _find_lines(text, ["其他要求", "特别说明", "补充", "否决", "一票否决"]),
+        },
+        "评分分析": {
+            "商务评分": _find_lines(text, ["商务评分", "商务部分", "商务分"]),
+            "技术评分": _find_lines(text, ["技术评分", "技术部分", "技术分"]),
+            "价格评分": _find_lines(text, ["价格评分", "报价得分", "价格分"]),
+            "废标条款分析": _find_lines(text, ["废标", "否决", "无效投标", "取消资格"]),
+        },
+        "标书编制分析": {
+            "标书编制整体目录分析": _find_lines(text, ["目录", "章", "节", "投标文件组成"]),
+            "商务标书编制分析（大纲目录）": _find_lines(text, ["商务标", "商务文件", "资格审查", "商务响应"]),
+            "技术标书编制分析（大纲目录）": _find_lines(text, ["技术标", "技术方案", "实施方案", "服务方案"]),
+            "价格部分编制分析": _find_lines(text, ["报价", "价格", "分项报价", "报价表"]),
+            "承诺函分析": _find_lines(text, ["承诺函", "承诺", "声明函"]),
+            "其他部分分析": _find_lines(text, ["附录", "附件", "补充", "备注"]),
+        }
+    }
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -162,6 +227,48 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         return super().do_GET()
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        if u.path == "/api/bid/analyze":
+            ctype, pdict = cgi.parse_header(self.headers.get("Content-Type", ""))
+            if ctype != "multipart/form-data":
+                self._json({"ok": False, "error": "请使用 multipart/form-data 上传文件"}, code=400)
+                return
+
+            form = cgi.FieldStorage(
+                fp=self.rfile,
+                headers=self.headers,
+                environ={"REQUEST_METHOD": "POST", "CONTENT_TYPE": self.headers.get("Content-Type")},
+            )
+            file_item = form["file"] if "file" in form else None
+            if file_item is None or not getattr(file_item, "filename", ""):
+                self._json({"ok": False, "error": "未检测到上传文件"}, code=400)
+                return
+
+            filename = os.path.basename(file_item.filename)
+            ext = os.path.splitext(filename)[1].lower()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tf:
+                tf.write(file_item.file.read())
+                temp_path = tf.name
+
+            try:
+                text = _extract_text(temp_path)
+                analysis = _analyze_bid_text(text)
+                self._json({
+                    "ok": True,
+                    "file_name": filename,
+                    "file_type": ext,
+                    "analysis": analysis,
+                })
+            finally:
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            return
+
+        self._json({"ok": False, "error": "not found"}, code=404)
 
 
 if __name__ == "__main__":

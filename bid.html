@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>标书编制助手</title>
+  <style>
+    body{margin:0;background:#0b1020;color:#eaf0ff;font-family:system-ui}
+    .wrap{max-width:1200px;margin:0 auto;padding:16px}
+    .card{background:#111a33;border:1px solid #2a3c6b;border-radius:10px;padding:12px;margin-bottom:12px}
+    .btn{display:inline-block;padding:8px 12px;border:1px solid #2a3c6b;border-radius:8px;background:#0c1428;color:#d9e6ff;cursor:pointer}
+    .btn:hover{background:#162548}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    th,td{padding:8px;border-bottom:1px solid #25345e;text-align:left;vertical-align:top}
+    .muted{color:#9cb0df;font-size:12px}
+    input[type=file]{margin:8px 0}
+    pre{white-space:pre-wrap;margin:0}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h2>标书编制</h2>
+  <div class="card">
+    <button id="analyzeBtn" class="btn">招标文件分析</button>
+    <input id="file" type="file" style="display:none"/>
+    <div id="state" class="muted" style="margin-top:8px">请点击“招标文件分析”，选择标书文件后自动分析。</div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none">
+    <h3>分析结果（表格）</h3>
+    <div id="meta" class="muted"></div>
+    <table>
+      <thead><tr><th style="width:180px">一级模块</th><th style="width:260px">二级项</th><th>分析结果</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const analyzeBtn = document.getElementById('analyzeBtn');
+const fileInput = document.getElementById('file');
+const state = document.getElementById('state');
+const resultCard = document.getElementById('resultCard');
+const rows = document.getElementById('rows');
+const meta = document.getElementById('meta');
+
+analyzeBtn.onclick = () => fileInput.click();
+
+fileInput.onchange = async () => {
+  const f = fileInput.files && fileInput.files[0];
+  if(!f) return;
+  state.textContent = `已上传：${f.name}，正在分析，请稍候...`;
+  const fd = new FormData();
+  fd.append('file', f);
+  try{
+    const r = await fetch('/api/bid/analyze', {method:'POST', body: fd});
+    const j = await r.json();
+    if(!j.ok){
+      state.textContent = `分析失败：${j.error||'未知错误'}`;
+      return;
+    }
+    state.textContent = `分析完成：${j.file_name}`;
+    render(j);
+  }catch(e){
+    state.textContent = `分析失败：${e.message||e}`;
+  }
+};
+
+function esc(s){
+  return String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+}
+
+function render(j){
+  resultCard.style.display='block';
+  meta.textContent = `文件：${j.file_name} (${j.file_type})`;
+  const a = j.analysis||{};
+  let html='';
+  for(const [lvl1, sec] of Object.entries(a)){
+    const entries = Object.entries(sec||{});
+    entries.forEach(([lvl2, txt], idx)=>{
+      html += `<tr>`+
+        `${idx===0?`<td rowspan='${entries.length}'><b>${esc(lvl1)}</b></td>`:''}`+
+        `<td>${esc(lvl2)}</td>`+
+        `<td><pre>${esc(txt)}</pre></td>`+
+      `</tr>`;
+    });
+  }
+  rows.innerHTML = html || `<tr><td colspan='3'>无结果</td></tr>`;
+}
+</script>
+</body>
+</html>
