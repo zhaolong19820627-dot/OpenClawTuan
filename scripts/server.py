@@ -9,6 +9,11 @@ import cgi
 import tempfile
 import subprocess
 import zipfile
+from datetime import datetime
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(BASE, "data", "kb.json")
@@ -17,6 +22,28 @@ HOST = os.environ.get("TUANKB_HOST", "0.0.0.0")
 PORT = int(os.environ.get("TUANKB_PORT", "18893"))
 
 _KB_CACHE = {"mtime": 0, "data": {}}
+REPORT_DIR = os.path.join(BASE, "data", "reports")
+os.makedirs(REPORT_DIR, exist_ok=True)
+
+
+def _pick_cn_font():
+    candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+_CN_FONT = _pick_cn_font()
+if _CN_FONT:
+    try:
+        pdfmetrics.registerFont(TTFont("TuanCN", _CN_FONT))
+    except Exception:
+        _CN_FONT = None
 
 
 def load_kb():
@@ -124,6 +151,54 @@ def _analyze_bid_text(text: str):
     }
 
 
+def _wrap_text(text: str, max_chars=44):
+    text = str(text or "")
+    chunks = []
+    while len(text) > max_chars:
+        chunks.append(text[:max_chars])
+        text = text[max_chars:]
+    chunks.append(text)
+    return chunks
+
+
+def _analysis_to_pdf(file_name: str, analysis: dict) -> str:
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out = os.path.join(REPORT_DIR, f"bid-analysis-{ts}.pdf")
+    c = canvas.Canvas(out, pagesize=A4)
+    w, h = A4
+    font = "TuanCN" if _CN_FONT else "Helvetica"
+    c.setFont(font, 14)
+    y = h - 40
+    c.drawString(40, y, "图安标书分析报告")
+    y -= 24
+    c.setFont(font, 10)
+    c.drawString(40, y, f"文件：{file_name}")
+    y -= 20
+
+    for lvl1, sec in analysis.items():
+        if y < 80:
+            c.showPage(); c.setFont(font, 10); y = h - 40
+        c.setFont(font, 12)
+        c.drawString(40, y, f"【{lvl1}】")
+        y -= 16
+        c.setFont(font, 10)
+        for lvl2, txt in (sec or {}).items():
+            if y < 80:
+                c.showPage(); c.setFont(font, 10); y = h - 40
+            c.drawString(48, y, f"- {lvl2}:")
+            y -= 14
+            for line in _wrap_text(txt, 52):
+                if y < 60:
+                    c.showPage(); c.setFont(font, 10); y = h - 40
+                c.drawString(62, y, line)
+                y -= 13
+            y -= 4
+        y -= 6
+
+    c.save()
+    return out
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=BASE, **kwargs)
@@ -200,7 +275,8 @@ class Handler(SimpleHTTPRequestHandler):
         if u.path in ("/download", "/preview"):
             raw = parse_qs(u.query).get("path", [""])[0]
             p = os.path.realpath(unquote(raw))
-            if not p.startswith(os.path.realpath(ROOT)) or not os.path.isfile(p):
+            allowed_roots = [os.path.realpath(ROOT), os.path.realpath(REPORT_DIR)]
+            if not any(p.startswith(ar) for ar in allowed_roots) or not os.path.isfile(p):
                 self.send_error(404, "file not found")
                 return
 
@@ -230,8 +306,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
-        if u.path == "/api/bid/analyze":
-            ctype, pdict = cgi.parse_header(self.headers.get("Content-Type", ""))
+        if u.path in ("/api/bid/analyze", "/api/bid/analyze_pdf"):
+            ctype, _ = cgi.parse_header(self.headers.get("Content-Type", ""))
             if ctype != "multipart/form-data":
                 self._json({"ok": False, "error": "请使用 multipart/form-data 上传文件"}, code=400)
                 return
@@ -255,6 +331,18 @@ class Handler(SimpleHTTPRequestHandler):
             try:
                 text = _extract_text(temp_path)
                 analysis = _analyze_bid_text(text)
+                if u.path == "/api/bid/analyze_pdf":
+                    pdf_path = _analysis_to_pdf(filename, analysis)
+                    self._json({
+                        "ok": True,
+                        "file_name": filename,
+                        "file_type": ext,
+                        "analysis": analysis,
+                        "pdf_path": pdf_path,
+                        "pdf_download_url": f"/download?path={pdf_path}",
+                    })
+                    return
+
                 self._json({
                     "ok": True,
                     "file_name": filename,
