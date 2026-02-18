@@ -13,7 +13,10 @@ from datetime import datetime
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfgen import canvas
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(BASE, "data", "kb.json")
@@ -38,12 +41,22 @@ def _pick_cn_font():
     return None
 
 
+_FONT_NAME = "Helvetica"
 _CN_FONT = _pick_cn_font()
 if _CN_FONT:
     try:
         pdfmetrics.registerFont(TTFont("TuanCN", _CN_FONT))
+        _FONT_NAME = "TuanCN"
     except Exception:
         _CN_FONT = None
+
+# 兜底：使用 ReportLab 内置中文 CID 字体（避免中文乱码）
+if _FONT_NAME == "Helvetica":
+    try:
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+        _FONT_NAME = "STSong-Light"
+    except Exception:
+        pass
 
 
 def load_kb():
@@ -101,8 +114,10 @@ def _extract_text(path: str) -> str:
         if ext == ".docx":
             with zipfile.ZipFile(path) as z:
                 xml = z.read("word/document.xml").decode("utf-8", errors="ignore")
+                xml = re.sub(r"</w:p>|</w:tr>|</w:tbl>", "\n", xml)
+                xml = re.sub(r"<w:tab[^>]*>", "\t", xml)
                 xml = re.sub(r"<[^>]+>", " ", xml)
-                return re.sub(r"\s+", " ", xml)
+                return _normalize_text_for_extract(xml)
     except Exception:
         pass
 
@@ -113,24 +128,39 @@ def _extract_text(path: str) -> str:
         return ""
 
 
-def _find_lines(text: str, keywords):
+def _normalize_text_for_extract(text: str) -> str:
+    text = text.replace("\r", "\n")
+    text = re.sub(r"[\t\f\v]+", " ", text)
+    text = re.sub(r"\u3000", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text
+
+
+def _find_lines(text: str, keywords, max_items=4, max_len=90):
     lines = [x.strip() for x in re.split(r"[\r\n]+", text) if x.strip()]
     out = []
+    seen = set()
     for ln in lines:
         s = ln.lower()
         if any(k.lower() in s for k in keywords):
-            out.append(ln)
-        if len(out) >= 8:
+            one = re.sub(r"\s+", " ", ln)
+            one = one[:max_len]
+            if one not in seen:
+                out.append(one)
+                seen.add(one)
+        if len(out) >= max_items:
             break
-    return "\n".join(out) if out else "未明显命中，建议人工复核原文。"
+    return "；".join(out) if out else "未明显命中，建议人工复核原文。"
 
 
 def _analyze_bid_text(text: str):
+    text = _normalize_text_for_extract(text)
     return {
         "供应商分析": {
             "资质要求": _find_lines(text, ["资质", "资格", "营业执照", "认证", "证书"]),
             "业绩要求": _find_lines(text, ["业绩", "类似项目", "合同金额", "案例"]),
             "团队要求": _find_lines(text, ["项目经理", "团队", "人员", "工程师", "驻场"]),
+            "业绩要求（补充）": _find_lines(text, ["业绩证明", "合同复印件", "验收", "中标通知书"]),
             "信誉要求": _find_lines(text, ["信誉", "信用", "不良记录", "处罚", "黑名单"]),
             "其他要求": _find_lines(text, ["其他要求", "特别说明", "补充", "否决", "一票否决"]),
         },
@@ -151,51 +181,46 @@ def _analyze_bid_text(text: str):
     }
 
 
-def _wrap_text(text: str, max_chars=44):
-    text = str(text or "")
-    chunks = []
-    while len(text) > max_chars:
-        chunks.append(text[:max_chars])
-        text = text[max_chars:]
-    chunks.append(text)
-    return chunks
-
-
 def _analysis_to_pdf(file_name: str, analysis: dict) -> str:
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     out = os.path.join(REPORT_DIR, f"bid-analysis-{ts}.pdf")
-    c = canvas.Canvas(out, pagesize=A4)
-    w, h = A4
-    font = "TuanCN" if _CN_FONT else "Helvetica"
-    c.setFont(font, 14)
-    y = h - 40
-    c.drawString(40, y, "图安标书分析报告")
-    y -= 24
-    c.setFont(font, 10)
-    c.drawString(40, y, f"文件：{file_name}")
-    y -= 20
+
+    doc = SimpleDocTemplate(out, pagesize=A4, leftMargin=26, rightMargin=26, topMargin=28, bottomMargin=24)
+    styles = getSampleStyleSheet()
+    font = _FONT_NAME
+    h_style = ParagraphStyle("h", parent=styles["Heading2"], fontName=font, fontSize=13, leading=16)
+    n_style = ParagraphStyle("n", parent=styles["Normal"], fontName=font, fontSize=9.5, leading=13)
+
+    story = [
+        Paragraph("图安标书分析报告", ParagraphStyle("title", parent=styles["Title"], fontName=font, fontSize=16)),
+        Spacer(1, 6),
+        Paragraph(f"文件：{file_name}", n_style),
+        Spacer(1, 10),
+    ]
 
     for lvl1, sec in analysis.items():
-        if y < 80:
-            c.showPage(); c.setFont(font, 10); y = h - 40
-        c.setFont(font, 12)
-        c.drawString(40, y, f"【{lvl1}】")
-        y -= 16
-        c.setFont(font, 10)
+        story.append(Paragraph(f"{lvl1}", h_style))
+        data = [["分析项", "分析结果"]]
         for lvl2, txt in (sec or {}).items():
-            if y < 80:
-                c.showPage(); c.setFont(font, 10); y = h - 40
-            c.drawString(48, y, f"- {lvl2}:")
-            y -= 14
-            for line in _wrap_text(txt, 52):
-                if y < 60:
-                    c.showPage(); c.setFont(font, 10); y = h - 40
-                c.drawString(62, y, line)
-                y -= 13
-            y -= 4
-        y -= 6
+            data.append([Paragraph(str(lvl2), n_style), Paragraph(str(txt).replace("\n", "<br/>"), n_style)])
 
-    c.save()
+        t = Table(data, colWidths=[130, 390], repeatRows=1)
+        t.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, -1), font),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dbe5f1")),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#999999")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7f9fc")]),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 10))
+
+    doc.build(story)
     return out
 
 
